@@ -1,12 +1,10 @@
 import argparse
-import hashlib
 import logging
 import os
+import re
 import sys
-from datetime import datetime
 
 import requests
-from dateutil import parser
 
 # Configure logging
 logging.basicConfig(
@@ -28,6 +26,8 @@ class VirusTotalAPI:
         """
         self.api_key = api_key
         self.base_url = "https://www.virustotal.com/api/v3/"
+        self.last_status = None
+        self.last_error_kind = None
 
     def get_ip_report(self, ip_address):
         """
@@ -43,10 +43,19 @@ class VirusTotalAPI:
         headers = {"x-apikey": self.api_key}
 
         try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+            response = requests.get(url, headers=headers, timeout=10)
+            self.last_status = response.status_code
+            if response.status_code == 404:
+                self.last_error_kind = "not_found"
+                return None
+            if response.status_code in (401, 403, 429) or response.status_code >= 400:
+                self.last_error_kind = "failed"
+                logging.error(f"VirusTotal lookup failed with HTTP {response.status_code} for {url}")
+                return None
+            self.last_error_kind = None
             return response.json()
         except requests.exceptions.RequestException as e:
+            self.last_error_kind = "failed"
             logging.error(f"Error querying VirusTotal for IP {ip_address}: {e}")
             return None
 
@@ -64,10 +73,19 @@ class VirusTotalAPI:
         headers = {"x-apikey": self.api_key}
 
         try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+            response = requests.get(url, headers=headers, timeout=10)
+            self.last_status = response.status_code
+            if response.status_code == 404:
+                self.last_error_kind = "not_found"
+                return None
+            if response.status_code in (401, 403, 429) or response.status_code >= 400:
+                self.last_error_kind = "failed"
+                logging.error(f"VirusTotal lookup failed with HTTP {response.status_code} for {url}")
+                return None
+            self.last_error_kind = None
             return response.json()
         except requests.exceptions.RequestException as e:
+            self.last_error_kind = "failed"
             logging.error(f"Error querying VirusTotal for domain {domain}: {e}")
             return None
 
@@ -85,17 +103,26 @@ class VirusTotalAPI:
         headers = {"x-apikey": self.api_key}
 
         try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+            response = requests.get(url, headers=headers, timeout=10)
+            self.last_status = response.status_code
+            if response.status_code == 404:
+                self.last_error_kind = "not_found"
+                return None
+            if response.status_code in (401, 403, 429) or response.status_code >= 400:
+                self.last_error_kind = "failed"
+                logging.error(f"VirusTotal lookup failed with HTTP {response.status_code} for {url}")
+                return None
+            self.last_error_kind = None
             return response.json()
         except requests.exceptions.RequestException as e:
+            self.last_error_kind = "failed"
             logging.error(f"Error querying VirusTotal for hash {file_hash}: {e}")
             return None
 
 
 def is_valid_ip(ip_address):
     """
-    Validates if the given string is a valid IPv4 address.  Simple check, could be improved with a more robust regex.
+    Validates if the given string is a valid IPv4 address.
 
     Args:
         ip_address (str): The string to validate.
@@ -119,7 +146,11 @@ def is_valid_ip(ip_address):
 
 def is_valid_domain(domain):
     """
-    Validates if the given string is a valid domain. Simple check, could be improved with a more robust regex.
+    Validates if the given string is a valid domain.
+
+    Requires at least two dot separated labels, each label made of
+    letters, digits, or hyphens and not starting or ending with a
+    hyphen, and a final label of at least two letters.
 
     Args:
         domain (str): The string to validate.
@@ -127,9 +158,9 @@ def is_valid_domain(domain):
     Returns:
         bool: True if the string is a valid domain, False otherwise.
     """
-    # One dot is also the whole domain test, so the API is left to be the real validator for
-    # almost anything I am handed.
-    return "." in domain  # Basic check for a dot in the domain
+    if not domain or len(domain) > 253:
+        return False
+    return re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}", domain) is not None
 
 
 def is_valid_hash(file_hash):
@@ -142,10 +173,9 @@ def is_valid_hash(file_hash):
     Returns:
         bool: True if the string is a valid hash, False otherwise.
     """
-    hash_length = len(file_hash)
-    # Length is the whole hash test. A 32 character word that is not hex passes here and is
-    # sent to VirusTotal as if it were an MD5.
-    return hash_length == 32 or hash_length == 40 or hash_length == 64
+    if len(file_hash) not in (32, 40, 64):
+        return False
+    return re.fullmatch(r"[0-9a-fA-F]+", file_hash) is not None
 
 
 def setup_argparse():
@@ -192,6 +222,15 @@ def analyze_ip(vt_api, ip_address, output_file=None):
 
     report = vt_api.get_ip_report(ip_address)
 
+    if not report or "error" in report or "data" not in report:
+        if report and ("error" in report or "data" not in report):
+            print(f"VirusTotal lookup failed for IP address: {report.get('error', {}).get('message', 'error response with no data') if isinstance(report, dict) else 'error response'}")
+        elif getattr(vt_api, "last_error_kind", None) == "not_found":
+            print(f"No VirusTotal report found for IP address: {ip_address}")
+        else:
+            print(f"VirusTotal lookup failed for IP address: {ip_address}")
+        return False
+
     if report:
         attributes = report.get("data", {}).get("attributes", {})
         last_analysis_stats = attributes.get("last_analysis_stats", {})
@@ -230,10 +269,7 @@ def analyze_ip(vt_api, ip_address, output_file=None):
             except Exception as e:
                 logging.error(f"Error writing to output file {output_file}: {e}")
 
-    else:
-        # Every failure in the query layer returns None, so a missing report, a bad key, and a
-        # rate limit all print this same line. Those three need very different responses.
-        print(f"No VirusTotal report found for IP address: {ip_address}")
+    return True
 
 
 def analyze_domain(vt_api, domain, output_file=None):
@@ -247,6 +283,15 @@ def analyze_domain(vt_api, domain, output_file=None):
     """
 
     report = vt_api.get_domain_report(domain)
+
+    if not report or "error" in report or "data" not in report:
+        if report and ("error" in report or "data" not in report):
+            print(f"VirusTotal lookup failed for domain: {report.get('error', {}).get('message', 'error response with no data') if isinstance(report, dict) else 'error response'}")
+        elif getattr(vt_api, "last_error_kind", None) == "not_found":
+            print(f"No VirusTotal report found for domain: {domain}")
+        else:
+            print(f"VirusTotal lookup failed for domain: {domain}")
+        return False
 
     if report:
         attributes = report.get("data", {}).get("attributes", {})
@@ -281,8 +326,7 @@ def analyze_domain(vt_api, domain, output_file=None):
             except Exception as e:
                 logging.error(f"Error writing to output file {output_file}: {e}")
 
-    else:
-        print(f"No VirusTotal report found for domain: {domain}")
+    return True
 
 
 def analyze_file(vt_api, file_hash, output_file=None):
@@ -296,6 +340,15 @@ def analyze_file(vt_api, file_hash, output_file=None):
     """
 
     report = vt_api.get_file_report(file_hash)
+
+    if not report or "error" in report or "data" not in report:
+        if report and ("error" in report or "data" not in report):
+            print(f"VirusTotal lookup failed for hash: {report.get('error', {}).get('message', 'error response with no data') if isinstance(report, dict) else 'error response'}")
+        elif getattr(vt_api, "last_error_kind", None) == "not_found":
+            print(f"No VirusTotal report found for hash: {file_hash}")
+        else:
+            print(f"VirusTotal lookup failed for hash: {file_hash}")
+        return False
 
     if report:
         attributes = report.get("data", {}).get("attributes", {})
@@ -336,8 +389,7 @@ def analyze_file(vt_api, file_hash, output_file=None):
             except Exception as e:
                 logging.error(f"Error writing to output file {output_file}: {e}")
 
-    else:
-        print(f"No VirusTotal report found for hash: {file_hash}")
+    return True
 
 
 def main():
@@ -360,19 +412,22 @@ def main():
 
     if args.ip:
         if is_valid_ip(args.ip):
-            analyze_ip(vt_api, args.ip, args.output)
+            if not analyze_ip(vt_api, args.ip, args.output):
+                sys.exit(1)
         else:
             logging.error("Invalid IP address.")
             sys.exit(1)
     elif args.domain:
         if is_valid_domain(args.domain):
-            analyze_domain(vt_api, args.domain, args.output)
+            if not analyze_domain(vt_api, args.domain, args.output):
+                sys.exit(1)
         else:
             logging.error("Invalid domain.")
             sys.exit(1)
     elif args.file:
         if is_valid_hash(args.file):
-            analyze_file(vt_api, args.file, args.output)
+            if not analyze_file(vt_api, args.file, args.output):
+                sys.exit(1)
         else:
             logging.error("Invalid file hash.")
             sys.exit(1)
