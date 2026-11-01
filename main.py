@@ -107,6 +107,8 @@ def is_valid_ip(ip_address):
     if len(parts) != 4:
         return False
     try:
+        # int() accepts shapes a real address parser would not, a leading plus or spaces around
+        # a part among them, so this check and an actual parse disagree at the edges.
         for part in parts:
             if not 0 <= int(part) <= 255:
                 return False
@@ -125,6 +127,8 @@ def is_valid_domain(domain):
     Returns:
         bool: True if the string is a valid domain, False otherwise.
     """
+    # One dot is also the whole domain test, so the API is left to be the real validator for
+    # almost anything I am handed.
     return "." in domain  # Basic check for a dot in the domain
 
 
@@ -139,6 +143,8 @@ def is_valid_hash(file_hash):
         bool: True if the string is a valid hash, False otherwise.
     """
     hash_length = len(file_hash)
+    # Length is the whole hash test. A 32 character word that is not hex passes here and is
+    # sent to VirusTotal as if it were an MD5.
     return hash_length == 32 or hash_length == 40 or hash_length == 64
 
 
@@ -206,6 +212,8 @@ def analyze_ip(vt_api, ip_address, output_file=None):
             count = 0
             for engine, result in list(
                 attributes["last_analysis_results"].items()
+            # The first five engines are whatever order the response mapping happens to carry.
+            # Nothing ranks them, so the five shown can change between runs on the same input.
             )[:5]:  # Limit to first 5 results
                 output += f"    {engine}: {result['category']} ({result['result']})\n"
                 count += 1
@@ -223,6 +231,8 @@ def analyze_ip(vt_api, ip_address, output_file=None):
                 logging.error(f"Error writing to output file {output_file}: {e}")
 
     else:
+        # Every failure in the query layer returns None, so a missing report, a bad key, and a
+        # rate limit all print this same line. Those three need very different responses.
         print(f"No VirusTotal report found for IP address: {ip_address}")
 
 
