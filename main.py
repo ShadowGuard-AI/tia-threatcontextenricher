@@ -1,4 +1,5 @@
 import argparse
+import ipaddress
 import logging
 import os
 import re
@@ -53,7 +54,12 @@ class VirusTotalAPI:
                 logging.error(f"VirusTotal lookup failed with HTTP {response.status_code} for {url}")
                 return None
             self.last_error_kind = None
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                self.last_error_kind = "failed"
+                logging.error(f"VirusTotal returned a non-JSON response for {url}: {e}")
+                return None
         except requests.exceptions.RequestException as e:
             self.last_error_kind = "failed"
             logging.error(f"Error querying VirusTotal for IP {ip_address}: {e}")
@@ -83,7 +89,12 @@ class VirusTotalAPI:
                 logging.error(f"VirusTotal lookup failed with HTTP {response.status_code} for {url}")
                 return None
             self.last_error_kind = None
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                self.last_error_kind = "failed"
+                logging.error(f"VirusTotal returned a non-JSON response for {url}: {e}")
+                return None
         except requests.exceptions.RequestException as e:
             self.last_error_kind = "failed"
             logging.error(f"Error querying VirusTotal for domain {domain}: {e}")
@@ -113,7 +124,12 @@ class VirusTotalAPI:
                 logging.error(f"VirusTotal lookup failed with HTTP {response.status_code} for {url}")
                 return None
             self.last_error_kind = None
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                self.last_error_kind = "failed"
+                logging.error(f"VirusTotal returned a non-JSON response for {url}: {e}")
+                return None
         except requests.exceptions.RequestException as e:
             self.last_error_kind = "failed"
             logging.error(f"Error querying VirusTotal for hash {file_hash}: {e}")
@@ -130,15 +146,13 @@ def is_valid_ip(ip_address):
     Returns:
         bool: True if the string is a valid IPv4 address, False otherwise.
     """
-    parts = ip_address.split(".")
-    if len(parts) != 4:
-        return False
+    # Parse with the standard library address parser instead of int():
+    # int() accepted shapes a real parser rejects, such as a leading
+    # plus ("+8.8.8.8"), spaces (" 8.8.8.8"), underscores ("1_0.0.0.1"),
+    # and leading zeros ("008.8.8.8"), so those were sent to the API as
+    # if they were valid addresses. IPv4Address rejects all of them.
     try:
-        # int() accepts shapes a real address parser would not, a leading plus or spaces around
-        # a part among them, so this check and an actual parse disagree at the edges.
-        for part in parts:
-            if not 0 <= int(part) <= 255:
-                return False
+        ipaddress.IPv4Address(ip_address)
         return True
     except ValueError:
         return False
@@ -254,7 +268,9 @@ def analyze_ip(vt_api, ip_address, output_file=None):
             # The first five engines are whatever order the response mapping happens to carry.
             # Nothing ranks them, so the five shown can change between runs on the same input.
             )[:5]:  # Limit to first 5 results
-                output += f"    {engine}: {result['category']} ({result['result']})\n"
+                category = result.get("category", "unknown") if isinstance(result, dict) else "unknown"
+                result_text = result.get("result", "") if isinstance(result, dict) else ""
+                output += f"    {engine}: {category} ({result_text})\n"
                 count += 1
         else:
             output += "\n  No analysis results available.\n"
@@ -268,6 +284,7 @@ def analyze_ip(vt_api, ip_address, output_file=None):
                 logging.info(f"Report saved to {output_file}")
             except Exception as e:
                 logging.error(f"Error writing to output file {output_file}: {e}")
+                return False
 
     return True
 
@@ -311,7 +328,9 @@ def analyze_domain(vt_api, domain, output_file=None):
             for engine, result in list(
                 attributes["last_analysis_results"].items()
             )[:5]:  # Limit to first 5 results
-                output += f"    {engine}: {result['category']} ({result['result']})\n"
+                category = result.get("category", "unknown") if isinstance(result, dict) else "unknown"
+                result_text = result.get("result", "") if isinstance(result, dict) else ""
+                output += f"    {engine}: {category} ({result_text})\n"
                 count += 1
         else:
             output += "\n  No analysis results available.\n"
@@ -325,6 +344,7 @@ def analyze_domain(vt_api, domain, output_file=None):
                 logging.info(f"Report saved to {output_file}")
             except Exception as e:
                 logging.error(f"Error writing to output file {output_file}: {e}")
+                return False
 
     return True
 
@@ -374,7 +394,9 @@ def analyze_file(vt_api, file_hash, output_file=None):
             for engine, result in list(
                 attributes["last_analysis_results"].items()
             )[:5]:  # Limit to first 5 results
-                output += f"    {engine}: {result['category']} ({result['result']})\n"
+                category = result.get("category", "unknown") if isinstance(result, dict) else "unknown"
+                result_text = result.get("result", "") if isinstance(result, dict) else ""
+                output += f"    {engine}: {category} ({result_text})\n"
                 count += 1
         else:
             output += "\n  No analysis results available.\n"
@@ -388,6 +410,7 @@ def analyze_file(vt_api, file_hash, output_file=None):
                 logging.info(f"Report saved to {output_file}")
             except Exception as e:
                 logging.error(f"Error writing to output file {output_file}: {e}")
+                return False
 
     return True
 
